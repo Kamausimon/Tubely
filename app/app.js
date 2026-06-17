@@ -250,6 +250,7 @@ async function getVideo(videoID) {
 
 let currentVideo = null;
 
+
 function viewVideo(video) {
   currentVideo = video;
   document.getElementById('video-display').style.display = 'block';
