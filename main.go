@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/database"
 
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
@@ -21,6 +25,7 @@ type apiConfig struct {
 	s3Region         string
 	s3CfDistribution string
 	port             string
+	S3Client         *s3.Client
 }
 
 func main() {
@@ -87,6 +92,16 @@ func main() {
 		s3CfDistribution: s3CfDistribution,
 		port:             port,
 	}
+
+	s3Config, err := config.LoadDefaultConfig(context.Background(),
+		config.WithRegion(s3Region))
+
+	if err != nil {
+		fmt.Printf("failed to load SDK config %v", err)
+	}
+
+	client := s3.NewFromConfig(s3Config)
+	cfg.S3Client = client
 
 	err = cfg.ensureAssetsDir()
 	if err != nil {
