@@ -1,19 +1,66 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"net/http"
 	"os"
+	"os/exec"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
 )
+
+type FFProbeOutput struct {
+	Streams []struct {
+		Width  int `json:"width"`
+		Height int `json:"height"`
+	} `json:"streams"`
+}
+
+func GetVideoAspectRatio(filePath string) (string, error) {
+	cmd := exec.Command("ffprobe", "-v", "error", "-print_format", "json", "-show_streams", filePath)
+	var stdBuffer bytes.Buffer
+	cmd.Stdout = &stdBuffer
+
+	err := cmd.Run()
+	if err != nil {
+		return "", err
+	}
+
+	var probeData FFProbeOutput
+	if err = json.Unmarshal(stdBuffer.Bytes(), &probeData); err != nil {
+		return "", err
+	}
+
+	if len(probeData.Streams) == 0 || probeData.Streams[0].Width == 0 || probeData.Streams[0].Height == 0 {
+		return "", errors.New("could not detect valid video streams data")
+	}
+	width := probeData.Streams[0].Width
+	height := probeData.Streams[0].Height
+
+	// 5. Perform the aspect ratio math comparison
+	// We check standard ratios using cross-multiplication to handle float rounding safety
+	const tolerance = 0.02
+	actualRatio := float64(width) / float64(height)
+
+	if math.Abs(actualRatio-16.0/9.0) < tolerance {
+		return "16:9", nil
+	} else if math.Abs(actualRatio-9.0/16.0) < tolerance {
+		return "9:16", nil
+	}
+
+	return "other", nil
+}
 
 func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<30)
@@ -79,6 +126,22 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	ratio, err := GetVideoAspectRatio(tempfile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, " error reading the ratios", err)
+		return
+	}
+
+	var prefix string
+	switch ratio {
+	case "16:9":
+		prefix = "landscape/"
+	case "9:16":
+		prefix = "portrait/"
+	default:
+		prefix = "other/"
+	}
+
 	_, err = tempfile.Seek(0, io.SeekStart)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "error resolving to start of file", err)
@@ -92,7 +155,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	filekey := fmt.Sprintf("%s.mp4", hex.EncodeToString(randombytes))
+	filekey := fmt.Sprintf("%s%s.mp4", prefix, hex.EncodeToString(randombytes))
 
 	_, err = cfg.S3Client.PutObject(r.Context(), &s3.PutObjectInput{
 		Bucket:      aws.String(cfg.s3Bucket),
